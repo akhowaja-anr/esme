@@ -2,10 +2,12 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import session from "express-session";
+import pgSession from "connect-pg-simple";
 import cookieParser from "cookie-parser";
 import bodyParser from "body-parser";
 import path from "path";
 import { fileURLToPath } from "url";
+import pg from "pg";
 
 import { prisma } from "./db/prisma.js";
 import passport from "./config/passport.js";
@@ -22,6 +24,12 @@ import { slackRouter } from "./routes/slack.js";  // ✅ ADD THIS
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+const PgStore = pgSession(session);
+const pgPool = new pg.Pool({
+  connectionString: process.env.DATABASE_URL,
+});
+
 
 // ✅ Global BigInt -> string JSON serialization
 BigInt.prototype.toJSON = function () {
@@ -53,20 +61,22 @@ app.use(cookieParser());
 // ✅ Session configuration
 app.use(
   session({
-    secret: process.env.SESSION_SECRET || "randomstring",
+    store: new PgStore({
+      pool: pgPool,
+      tableName: "session", // Will auto-create this table
+    }),
+    secret: process.env.SESSION_SECRET || "your-secret-key-change-this",
     resave: false,
     saveUninitialized: false,
-    proxy: true, // ✅ Trust Render's proxy
+    proxy: true,
     cookie: {
-      secure: true, // ✅ Always use secure in production
+      secure: process.env.NODE_ENV === "production",
       httpOnly: true,
       maxAge: 24 * 60 * 60 * 1000, // 24 hours
-      sameSite: "lax", // ✅ Allow same-site redirects
-      domain: process.env.NODE_ENV === "production" ? ".onrender.com" : undefined, // ✅ Cookie domain
+      sameSite: "lax",
     },
   })
 );
-
 
 // ✅ Initialize Passport
 app.use(passport.initialize());
