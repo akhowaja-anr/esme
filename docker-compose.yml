@@ -1,0 +1,16 @@
+services:
+  db:
+    image: postgres:16
+    container_name: esme-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: esme
+      POSTGRES_PASSWORD: esme_password
+      POSTGRES_DB: esme_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - esme_pgdata:/var/lib/postgresql/data
+
+volumes:
+  esme_pgdata:

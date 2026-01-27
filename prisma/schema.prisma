@@ -1,0 +1,120 @@
+generator client {
+  provider   = "prisma-client-js"
+  output     = "../src/generated/prisma"
+  engineType = "binary"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum ChatScope {
+  PERSONAL
+  SHARED_SNAPSHOT
+}
+
+enum ShareRole {
+  VIEWER
+  EDITOR
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String?
+  googleId     String?  @unique
+  accessToken  String?  @db.Text
+  refreshToken String?  @db.Text
+  
+  // Slack integration
+  slackUserId      String?  @unique
+  slackTeamId      String?
+  slackAccessToken String?  @db.Text
+  
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  chats          Chat[]      @relation("UserChats")
+  sentMessages   Message[]   @relation("UserMessages")
+  sharesCreated  ChatShare[] @relation("ShareCreatedBy")
+  sharesReceived ChatShare[] @relation("ShareToUser")
+}
+
+model Chat {
+  id           String    @id @default(cuid())
+  ownerId      String
+  owner        User      @relation("UserChats", fields: [ownerId], references: [id], onDelete: Cascade)
+
+  scope        ChatScope @default(PERSONAL)
+  name         String
+  systemPrompt String?   @db.Text
+  filesLocked  Boolean   @default(false)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  messages Message[]
+  files    ChatFile[]
+  shares   ChatShare[]
+
+  @@index([ownerId, updatedAt])
+  @@index([scope, updatedAt])
+}
+
+model Message {
+  id        String   @id @default(cuid())
+  chatId    String
+  chat      Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  sender    String
+  text      String   @db.Text
+  timestamp BigInt?
+
+  userId    String?
+  user      User?    @relation("UserMessages", fields: [userId], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+
+  @@index([chatId, createdAt])
+}
+
+model ChatFile {
+  id          String   @id @default(cuid())
+  chatId      String
+  chat        Chat     @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  driveFileId String
+  name        String
+  mimeType    String?
+
+  createdAt DateTime @default(now())
+
+  @@unique([chatId, driveFileId])
+  @@index([driveFileId])
+}
+
+model ChatShare {
+  id               String    @id @default(cuid())
+
+  chatId           String
+  chat             Chat      @relation(fields: [chatId], references: [id], onDelete: Cascade)
+
+  sharedWithEmail  String?
+  sharedWithUserId String?
+  sharedWithUser   User?     @relation("ShareToUser", fields: [sharedWithUserId], references: [id], onDelete: SetNull)
+
+  role             ShareRole @default(VIEWER)
+
+  createdByUserId  String
+  createdByUser    User      @relation("ShareCreatedBy", fields: [createdByUserId], references: [id], onDelete: Cascade)
+
+  snapshotChatJson Json      @db.JsonB
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([chatId])
+  @@index([sharedWithUserId])
+  @@index([sharedWithEmail])
+  @@index([createdByUserId])
+}

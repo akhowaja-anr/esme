@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <base target="_top" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Documentation e-SME</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+
+<body>
+  <header>
+    <h1>🤖 Documentation e-SME</h1>
+    <div class="header-buttons">
+      <button id="newChatBtn">🆕 New Chat</button>
+      <button id="saveChatBtn">✏️ Rename</button>
+      <button id="shareChatBtn">🔗 Share</button>
+      <button id="deleteChatBtn">🗑️ Delete</button>
+      <button id="slackConnectBtn" class="btn-secondary">💬 Connect Slack</button>
+      <button class="theme-toggle" id="themeToggle">🌙</button>
+    </div>
+  </header>
+
+  <div class="main">
+    <div class="sidebar">
+      <h2>🌐 Shared Chats</h2>
+      <div class="chat-list" id="sharedChatList">
+        <div class="sidebar-empty">No shared chats</div>
+      </div>
+
+      <div class="chat-section-divider"></div>
+
+      <h2>💬 Saved Chats</h2>
+      <div class="chat-list" id="chatList">
+        <div class="sidebar-empty">Loading...</div>
+      </div>
+    </div>
+
+    <div class="chat-area">
+      <div class="file-selector" id="fileSelector">
+        <h2>
+          <span>📁 Select Files from Google Drive</span>
+          <span class="lock-badge" id="lockBadge" style="display:none;">🔒 LOCKED</span>
+        </h2>
+
+        <div class="file-selector-top">
+          <div class="file-actions">
+            <button class="btn" id="listFilesBtn">📋 Show Files</button>
+            <button class="btn btn-secondary" id="refreshBtn" style="display:none;">🔄 Refresh</button>
+            <button class="btn btn-lock" id="lockBtn">🔓 Lock Files</button>
+            <span class="file-count" id="fileCount" style="display:none;"></span>
+          </div>
+
+          <div class="selected-files-section" id="selectedFilesSection" style="display:none;">
+            <h3>
+              <span>📌 Selected</span>
+              <button class="btn btn-clear" id="clearFilesBtn">Clear All</button>
+            </h3>
+            <div id="selectedFilesList"></div>
+          </div>
+        </div>
+
+        <div class="file-list-container" id="fileListContainer">
+          <input type="text" class="search-box" id="searchBox" placeholder="Search files by name..." />
+          <div class="file-list" id="fileList"></div>
+        </div>
+      </div>
+
+      <div class="system-prompt-section">
+        <h2>
+          <span>⚙️ System Prompt (Current Chat)</span>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-secondary" id="togglePromptBtn" style="font-size:12px;padding:4px 10px;">▼ Show</button>
+          </div>
+        </h2>
+
+        <div id="systemPromptContainer" style="display:none;">
+          <textarea
+            id="systemPromptTextarea"
+            class="system-prompt-textarea"
+            placeholder="Enter your custom system prompt for this chat..."
+          ></textarea>
+          <div class="system-prompt-buttons">
+            <button class="btn" id="savePromptBtn">💾 Apply to This Chat</button>
+            <button class="btn btn-secondary" id="resetPromptBtn">🔄 Reset to Default</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="chat-container" id="chatContainer">
+        <div class="message ai">
+          Hi! 👋 I'm your AI assistant. Select one or more files and ask me anything about them!
+        </div>
+      </div>
+
+      <div class="input-area">
+        <input type="text" id="userInput" placeholder="Ask a question about your files..." />
+        <button class="send-btn" id="sendBtn">➤</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="modalOverlay" class="modal-overlay">
+    <div class="modal-window">
+      <div class="modal-header">
+        <span id="modalTitle" class="modal-title"></span>
+        <button id="modalClose" class="modal-close">✕</button>
+      </div>
+      <div id="modalBody" class="modal-body"></div>
+      <div id="modalFooter" class="modal-footer"></div>
+    </div>
+  </div>
+
+  <div id="toastContainer" class="toast-container"></div>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
