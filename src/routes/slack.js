@@ -431,18 +431,22 @@ slackRouter.post("/commands", verifySlackRequest, async (req, res) => {
 /**
  * Events API handler
  */
-slackRouter.post("/events", verifySlackRequest, async (req, res) => {
-  const { type, challenge, event } = req.body;
-
-  // URL verification challenge
-  if (type === "url_verification") {
-    return res.json({ challenge });
+slackRouter.post("/events", (req, res, next) => {
+  // Handle Slack URL verification challenge immediately (no signature verification needed)
+  if (req.body?.type === "url_verification") {
+    console.log("Received Slack challenge, responding with:", req.body.challenge);
+    return res.json({ challenge: req.body.challenge });
   }
+  
+  // For other events, proceed with signature verification
+  next();
+}, verifySlackRequest, async (req, res) => {
+  const { event } = req.body;
 
-  // Acknowledge event
+  // Acknowledge event immediately
   res.status(200).send();
 
-  // Handle DM events
+  // Handle DM events asynchronously
   if (event?.type === "message" && event.channel_type === "im" && !event.bot_id) {
     try {
       const user = await prisma.user.findUnique({
@@ -475,11 +479,11 @@ slackRouter.post("/interactions", verifySlackRequest, async (req, res) => {
   // Handle button interactions
   if (payload.type === "block_actions") {
     const action = payload.actions[0];
-    
+
     // Handle view shared chat button
     if (action.action_id === "view_shared_chat") {
       const shareId = action.value;
-      
+
       try {
         const user = await prisma.user.findUnique({
           where: { slackUserId: payload.user.id },
