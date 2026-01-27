@@ -1,7 +1,11 @@
+// Automatically use the correct URL based on environment
+const API_BASE_URL = 
+  window.location.hostname === "localhost" 
+    ? "http://localhost:8080" 
+    : window.location.origin;
+
 export const CONFIG = {
-  API_BASE_URL: "http://localhost:8080",
-  // If your backend currently uses dev auth only (no tokens), leave as null.
-  // If you want to send a Google OAuth access token for Drive reads, set it in UI with the 🔑 Token button.
+  API_BASE_URL,
   TOKEN_STORAGE_KEY: "esme_google_access_token",
   THEME_STORAGE_KEY: "theme",
   FALLBACK_DEFAULT_PROMPT:
