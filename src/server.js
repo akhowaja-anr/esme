@@ -29,6 +29,7 @@ BigInt.prototype.toJSON = function () {
 };
 
 const app = express();
+app.set("trust proxy", 1);
 
 // ✅ Middleware
 app.use(cors({
@@ -52,16 +53,20 @@ app.use(cookieParser());
 // ✅ Session configuration
 app.use(
   session({
-    secret: process.env.SESSION_SECRET || "your-secret-key-change-this",
+    secret: process.env.SESSION_SECRET || "randomstring",
     resave: false,
     saveUninitialized: false,
+    proxy: true, // ✅ Trust Render's proxy
     cookie: {
-      secure: process.env.NODE_ENV === "production",
+      secure: true, // ✅ Always use secure in production
       httpOnly: true,
-      maxAge: 24 * 60 * 60 * 1000,
+      maxAge: 24 * 60 * 60 * 1000, // 24 hours
+      sameSite: "lax", // ✅ Allow same-site redirects
+      domain: process.env.NODE_ENV === "production" ? ".onrender.com" : undefined, // ✅ Cookie domain
     },
   })
 );
+
 
 // ✅ Initialize Passport
 app.use(passport.initialize());
