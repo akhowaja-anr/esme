@@ -126,6 +126,7 @@ slackRouter.get("/oauth/callback", async (req, res) => {
     res.status(500).send(`OAuth failed: ${error.message}`);
   }
 });
+
 /**
  * Slash Commands handler
  */
