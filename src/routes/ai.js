@@ -106,11 +106,27 @@ aiRouter.post("/prompt", async (req, res) => {
       },
     });
 
+    // ✅ Post user message to Slack
+    if (chat.slackChannelId && accessToken) {
+      try {
+        const { postMessageToSlack } = await import("../services/slackChannelManager.js");
+
+        await postMessageToSlack(
+          chat.slackChannelId,
+          `👤 *You*\n${userPrompt.trim()}`,
+          accessToken
+        );
+      } catch (error) {
+        console.error("Error posting user message to Slack:", error);
+      }
+    }
+
+
     // Call Gemini
     const aiResponse = await callGemini(combinedPrompt);
 
     // Save AI message
-    await prisma.message.create({
+    const aiMessage = await prisma.message.create({
       data: {
         chatId: chat.id,
         sender: "ai",
@@ -118,6 +134,28 @@ aiRouter.post("/prompt", async (req, res) => {
         timestamp: BigInt(Date.now()),
       },
     });
+
+    // ✅ Post to Slack if channel exists
+    if (chat.slackChannelId && req.user.slackAccessToken) {
+      try {
+        const { postMessageToSlack } = await import("../services/slackChannelManager.js");
+
+        const slackTs = await postMessageToSlack(
+          chat.slackChannelId,
+          `🤖 *AI Assistant*\n${aiResponse}`,
+          req.user.slackAccessToken
+        );
+
+        // Update message with Slack timestamp
+        await prisma.message.update({
+          where: { id: aiMessage.id },
+          data: { slackTs, syncedToSlack: true },
+        });
+      } catch (error) {
+        console.error("Error posting to Slack:", error);
+        // Continue without Slack sync
+      }
+    }
 
     res.json({ aiResponse });
   } catch (e) {

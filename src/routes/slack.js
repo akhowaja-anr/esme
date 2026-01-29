@@ -96,7 +96,17 @@ slackRouter.get("/oauth/callback", async (req, res) => {
     await sendSlackMessage(
       userClient,
       slackUserId,
-      "🎉 *Connected to e-SME!*\n\nYou can now:\n• `/esme-chats` - View your chats\n• `/esme-new` - Create a new chat\n• `/esme-chat <chat-id> <message>` - Send a message\n• `/esme-share <chat-id> <email>` - Share a chat"
+      "🎉 *Connected to e-SME!*\n\n" +
+      "Your e-SME chats will appear as private Slack channels.\n\n" +
+      "*How it works:*\n" +
+      "• Create chats in the web app\n" +
+      "• They automatically appear as Slack channels\n" +
+      "• Message in Slack or web app - stays in sync!\n" +
+      "• Share chats - colleagues get added to the channel\n\n" +
+      "*Commands:*\n" +
+      "• `/esme-chats` - View all your chats\n" +
+      "• `/esme-chats shared` - View shared chats\n\n" +
+      `🌐 Web app: ${process.env.FRONTEND_URL}`
     );
 
     res.send(
@@ -371,13 +381,12 @@ slackRouter.post("/commands", verifySlackRequest, async (req, res) => {
  * Events API handler
  */
 slackRouter.post("/events", (req, res, next) => {
-  // Handle Slack URL verification challenge immediately (no signature verification needed)
+  // Handle Slack URL verification challenge
   if (req.body?.type === "url_verification") {
     console.log("Received Slack challenge, responding with:", req.body.challenge);
     return res.json({ challenge: req.body.challenge });
   }
 
-  // For other events, proceed with signature verification
   next();
 }, verifySlackRequest, async (req, res) => {
   const { event } = req.body;
@@ -385,24 +394,104 @@ slackRouter.post("/events", (req, res, next) => {
   // Acknowledge event immediately
   res.status(200).send();
 
-  // Handle DM events asynchronously
-  if (event?.type === "message" && event.channel_type === "im" && !event.bot_id) {
+  // Handle channel messages
+  if (event?.type === "message" && !event.bot_id && event.channel_type === "group") {
     try {
+      // Find chat by Slack channel ID
+      const chat = await prisma.chat.findUnique({
+        where: { slackChannelId: event.channel },
+        include: {
+          files: true,
+          owner: true,
+        },
+      });
+
+      if (!chat) return;
+
+      // Find user who sent message
       const user = await prisma.user.findUnique({
         where: { slackUserId: event.user },
       });
 
       if (!user) return;
 
-      const client = createSlackClient(user.slackAccessToken);
+      // Check if message already synced (prevent duplicates)
+      const existing = await prisma.message.findFirst({
+        where: { slackTs: event.ts },
+      });
 
-      await sendSlackMessage(
-        client,
-        event.channel,
-        "💡 To chat with e-SME, use slash commands:\n• `/esme-chats` - View your chats\n• `/esme-chat <chat-id> <message>` - Send a message"
+      if (existing) return;
+
+      // Save message to database
+      await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          sender: "user",
+          text: event.text,
+          timestamp: BigInt(Date.now()),
+          userId: user.id,
+          slackTs: event.ts,
+          syncedToSlack: true,
+        },
+      });
+
+      // Get AI response
+      const { callGemini } = await import("../services/gemini.js");
+      const { getDriveFileContent } = await import("../services/driveContent.js");
+
+      // Build prompt with file contents
+      const fileContents = [];
+      for (const f of chat.files) {
+        try {
+          const contentData = await getDriveFileContent({
+            accessToken: chat.owner.accessToken,
+            fileId: f.driveFileId,
+            mimeType: f.mimeType,
+          });
+          fileContents.push(contentData);
+        } catch (err) {
+          console.error(`Error reading file ${f.driveFileId}:`, err);
+        }
+      }
+
+      let combinedPrompt = `${chat.systemPrompt || "You are a helpful AI assistant."}\n\n***DOCUMENTS CONTENT***\n\n`;
+      fileContents.forEach((file, index) => {
+        combinedPrompt += `\n--- START DOCUMENT ${index + 1} (${file.name}) ---\n`;
+        combinedPrompt += file.content || "";
+        combinedPrompt += `\n--- END DOCUMENT ${index + 1} ---\n`;
+      });
+      combinedPrompt += `\n***USER REQUEST***\n\n${event.text}\n\n***AI RESPONSE***\n\n`;
+
+      const aiResponse = await callGemini(combinedPrompt);
+
+      // Save AI response to database
+      const aiMessage = await prisma.message.create({
+        data: {
+          chatId: chat.id,
+          sender: "ai",
+          text: aiResponse,
+          timestamp: BigInt(Date.now()),
+          syncedToSlack: false, // Will be synced when posted
+        },
+      });
+
+      // Post AI response to Slack
+      const { postMessageToSlack } = await import("../services/slackChannelManager.js");
+
+      const slackTs = await postMessageToSlack(
+        chat.slackChannelId,
+        `🤖 *AI Assistant*\n${aiResponse}`,
+        chat.owner.slackAccessToken
       );
+
+      // Update with Slack timestamp
+      await prisma.message.update({
+        where: { id: aiMessage.id },
+        data: { slackTs, syncedToSlack: true },
+      });
+
     } catch (error) {
-      console.error("DM event error:", error);
+      console.error("Channel message error:", error);
     }
   }
 });

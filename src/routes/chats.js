@@ -97,6 +97,7 @@ chatsRouter.get("/:id", async (req, res) => {
           timestamp: true,
           createdAt: true,
           userId: true,
+          slackTs: true,
         },
       },
     },
@@ -104,7 +105,43 @@ chatsRouter.get("/:id", async (req, res) => {
 
   if (!chat) return res.status(404).json({ error: "Chat not found" });
 
-  // ✅ Fix BigInt JSON serialization
+  // ✅ Create Slack channel if user has Slack connected and channel doesn't exist
+  if (req.user.slackAccessToken && !chat.slackChannelId) {
+    try {
+      const { getOrCreateSlackChannel, syncMessagesToSlack } = await import("../services/slackChannelManager.js");
+      
+      await getOrCreateSlackChannel(chat, req.user.slackAccessToken);
+      
+      // Sync existing messages
+      if (chat.messages.length > 0) {
+        await syncMessagesToSlack(chat, req.user.slackAccessToken);
+      }
+      
+      // Reload chat to get updated slackChannelId
+      const updatedChat = await prisma.chat.findUnique({
+        where: { id: chatId },
+        include: {
+          files: { orderBy: { createdAt: "asc" } },
+          messages: { orderBy: { createdAt: "asc" } },
+        },
+      });
+      
+      const safeChat = {
+        ...updatedChat,
+        messages: updatedChat.messages.map((m) => ({
+          ...m,
+          timestamp: m.timestamp != null ? m.timestamp.toString() : null,
+        })),
+      };
+
+      return res.json({ chat: safeChat });
+    } catch (error) {
+      console.error("Slack channel creation error:", error);
+      // Continue without Slack channel
+    }
+  }
+
+  // Fix BigInt JSON serialization
   const safeChat = {
     ...chat,
     messages: chat.messages.map((m) => ({
