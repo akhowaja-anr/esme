@@ -7,7 +7,7 @@ export function buildChatListBlocks(chats, type = "personal") {
         type: "section",
         text: {
           type: "mrkdwn",
-          text: `No ${type} chats found. Create one in the e-SME web app!`,
+          text: `No ${type} chats found.\n\n🌐 Create chats in the web app: ${process.env.FRONTEND_URL}`,
         },
       },
     ];
@@ -18,7 +18,14 @@ export function buildChatListBlocks(chats, type = "personal") {
       type: "header",
       text: {
         type: "plain_text",
-        text: `📋 Your ${type === "personal" ? "Personal" : "Shared"} Chats`,
+        text: `📋 Your Personal Chats`,
+      },
+    },
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: "💡 Personal chats can only be accessed in the web app.\nTo message from Slack, share a chat first!",
       },
     },
     {
@@ -36,7 +43,7 @@ export function buildChatListBlocks(chats, type = "personal") {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `*${chatName}*\nID: \`${chatId}\`\n📎 ${fileCount} files · 💬 ${messageCount} messages`,
+        text: `*${chatName}*\n📎 ${fileCount} files · 💬 ${messageCount} messages`,
       },
       accessory: {
         type: "button",
@@ -55,7 +62,7 @@ export function buildChatListBlocks(chats, type = "personal") {
     elements: [
       {
         type: "mrkdwn",
-        text: "💡 Use `/esme-chat <chat-id> <message>` to send a message to a chat",
+        text: "🔗 To message from Slack: Share a chat with colleagues using the web app",
       },
     ],
   });
@@ -70,7 +77,7 @@ export function buildSharedChatListBlocks(shares) {
         type: "section",
         text: {
           type: "mrkdwn",
-          text: "No shared chats found.",
+          text: "No shared chats found.\n\nChats shared with you will appear here.",
         },
       },
     ];
@@ -85,6 +92,13 @@ export function buildSharedChatListBlocks(shares) {
       },
     },
     {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: "💡 To send a message: `/esme-chat <Share-ID> <your message>`",
+      },
+    },
+    {
       type: "divider",
     },
   ];
@@ -92,24 +106,39 @@ export function buildSharedChatListBlocks(shares) {
   shares.forEach((share) => {
     const chatName = share.snapshotChatJson?.name || "Shared Chat";
     const shareId = share.id;
-    const sharedBy = share.createdByUser?.email || "Unknown";
+    const sharedBy = share.createdByUser?.name || share.createdByUser?.email || "Unknown";
+    const fileCount = share.snapshotChatJson?.files?.length || 0;
+    const messageCount = share.snapshotChatJson?.messages?.length || 0;
 
     blocks.push({
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `*${chatName}*\nShare ID: \`${shareId}\`\nShared by: ${sharedBy}`,
+        text: `*${chatName}*\n` +
+              `📋 Share ID: \`${shareId}\`\n` +
+              `👤 Shared by: ${sharedBy}\n` +
+              `📎 ${fileCount} files · 💬 ${messageCount} messages`,
       },
       accessory: {
         type: "button",
         text: {
           type: "plain_text",
-          text: "View",
+          text: "View in Web",
         },
-        action_id: "view_shared_chat",
-        value: shareId,
+        url: `${process.env.FRONTEND_URL}?share=${shareId}`,
+        action_id: "open_shared_chat",
       },
     });
+  });
+
+  blocks.push({
+    type: "context",
+    elements: [
+      {
+        type: "mrkdwn",
+        text: "📱 Use the Share ID in `/esme-chat` or click *View in Web* to see full chat",
+      },
+    ],
   });
 
   return blocks;

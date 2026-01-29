@@ -188,32 +188,6 @@ slackRouter.post("/commands", verifySlackRequest, async (req, res) => {
         break;
       }
 
-      case "/esme-new": {
-        const chatName = text.trim() || "New Chat from Slack";
-
-        const chat = await prisma.chat.create({
-          data: {
-            ownerId: user.id,
-            name: chatName,
-            scope: "PERSONAL",
-          },
-        });
-
-        const blocks = buildSuccessBlock(
-          `Chat created: *${chatName}*\nID: \`${chat.id}\`\n\nAdd files and chat in the web app, or use \`/esme-chat ${chat.id} <message>\` to send messages.`
-        );
-
-        await fetch(response_url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            blocks,
-            response_type: "ephemeral",
-          }),
-        });
-        break;
-      }
-
       case "/esme-chat": {
         const parts = text.trim().split(" ");
         if (parts.length < 2) {
@@ -222,7 +196,9 @@ slackRouter.post("/commands", verifySlackRequest, async (req, res) => {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               blocks: buildErrorBlock(
-                "Usage: `/esme-chat <chat-id> <your message>`"
+                "Usage: `/esme-chat <share-id> <your message>`\n\n" +
+                "💡 Get the Share ID from `/esme-chats shared`\n" +
+                "Note: You can only message shared chats, not personal chats (they require Drive access)."
               ),
               response_type: "ephemeral",
             }),
@@ -230,67 +206,68 @@ slackRouter.post("/commands", verifySlackRequest, async (req, res) => {
           return;
         }
 
-        const chatId = parts[0];
+        const shareId = parts[0];
         const message = parts.slice(1).join(" ");
 
-        // Check if it's a personal chat or shared chat
-        let chat = await prisma.chat.findFirst({
-          where: { id: chatId, ownerId: user.id },
-          include: {
-            files: true,
+        // Find the shared chat
+        const share = await prisma.chatShare.findFirst({
+          where: {
+            id: shareId,
+            sharedWithEmail: user.email,
           },
         });
 
-        let isSharedChat = false;
-        let share = null;
-
-        if (!chat) {
-          // Check if it's a share ID
-          share = await prisma.chatShare.findFirst({
-            where: {
-              id: chatId,
-              sharedWithEmail: user.email,
-            },
+        if (!share) {
+          await fetch(response_url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              blocks: buildErrorBlock(
+                "Share not found or you don't have access.\n\n" +
+                "Make sure you're using a **Share ID** (not a Chat ID).\n" +
+                "Get Share IDs from: `/esme-chats shared`"
+              ),
+              response_type: "ephemeral",
+            }),
           });
-
-          if (share) {
-            isSharedChat = true;
-          } else {
-            await fetch(response_url, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                blocks: buildErrorBlock("Chat not found or you don't have access."),
-                response_type: "ephemeral",
-              }),
-            });
-            return;
-          }
+          return;
         }
 
-        // Send to shared chat
-        if (isSharedChat) {
-          const snapshot = share.snapshotChatJson;
-          const systemPrompt = snapshot.systemPrompt || "You are a helpful AI assistant.";
-          const filesWithContent = snapshot.files || [];
+        // Process shared chat message
+        const snapshot = share.snapshotChatJson;
+        const systemPrompt = snapshot.systemPrompt || "You are a helpful AI assistant.";
+        const filesWithContent = snapshot.files || [];
 
-          // Build prompt with file contents
-          let combinedPrompt = `${systemPrompt}\n\n***DOCUMENTS CONTENT***\n\n`;
-
-          filesWithContent.forEach((file, index) => {
-            combinedPrompt += `\n--- START DOCUMENT ${index + 1} (${file.name}) ---\n`;
-            combinedPrompt += file.content || "";
-            combinedPrompt += `\n--- END DOCUMENT ${index + 1} ---\n`;
+        if (!filesWithContent.length) {
+          await fetch(response_url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              blocks: buildErrorBlock("This shared chat has no documents attached."),
+              response_type: "ephemeral",
+            }),
           });
+          return;
+        }
 
-          combinedPrompt +=
-            `\n***USER REQUEST***\n\n${message}\n\n` +
-            `***INSTRUCTIONS***\n\nProvide a response based on the documents.\n\n` +
-            `***AI RESPONSE***\n\n`;
+        // Build prompt with file contents
+        let combinedPrompt = `${systemPrompt}\n\n***DOCUMENTS CONTENT***\n\n`;
 
+        filesWithContent.forEach((file, index) => {
+          combinedPrompt += `\n--- START DOCUMENT ${index + 1} (${file.name}) ---\n`;
+          combinedPrompt += file.content || "";
+          combinedPrompt += `\n--- END DOCUMENT ${index + 1} ---\n`;
+        });
+
+        combinedPrompt +=
+          `\n***USER REQUEST***\n\n${message}\n\n` +
+          `***INSTRUCTIONS***\n\nProvide a response based on the documents.\n\n` +
+          `***AI RESPONSE***\n\n`;
+
+        try {
           const aiResponse = await callGemini(combinedPrompt);
 
-          // Update snapshot
+          // Update snapshot with new messages
           const updatedMessages = [
             ...(snapshot.messages || []),
             {
@@ -298,6 +275,7 @@ slackRouter.post("/commands", verifySlackRequest, async (req, res) => {
               text: message,
               createdAt: new Date().toISOString(),
               source: "slack",
+              userEmail: user.email,
             },
             {
               sender: "ai",
@@ -316,6 +294,7 @@ slackRouter.post("/commands", verifySlackRequest, async (req, res) => {
             },
           });
 
+          // Send response to Slack
           await fetch(response_url, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -335,73 +314,33 @@ slackRouter.post("/commands", verifySlackRequest, async (req, res) => {
                   type: "section",
                   text: {
                     type: "mrkdwn",
-                    text: `*AI Response:*\n${aiResponse}`,
+                    text: `*AI Response:*\n${aiResponse.substring(0, 2900)}${aiResponse.length > 2900 ? '...\n\n_View full response in the web app_' : ''}`,
                   },
+                },
+                {
+                  type: "context",
+                  elements: [
+                    {
+                      type: "mrkdwn",
+                      text: `💬 Chat: ${snapshot.name || 'Shared Chat'}`,
+                    },
+                  ],
                 },
               ],
               response_type: "ephemeral",
             }),
           });
-        } else {
-          // Send to personal chat
-          if (!chat.files || chat.files.length === 0) {
-            await fetch(response_url, {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({
-                blocks: buildErrorBlock(
-                  "This chat has no files attached. Add files in the web app first."
-                ),
-                response_type: "ephemeral",
-              }),
-            });
-            return;
-          }
-
-          // This would require Google Drive access - show message
+        } catch (error) {
+          console.error("AI error:", error);
           await fetch(response_url, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              blocks: buildErrorBlock(
-                "Sending messages to personal chats from Slack requires the web app (needs Drive access). Use the web interface or share the chat first."
-              ),
+              blocks: buildErrorBlock(`AI Error: ${error.message}`),
               response_type: "ephemeral",
             }),
           });
         }
-        break;
-      }
-
-      case "/esme-share": {
-        const parts = text.trim().split(" ");
-        if (parts.length !== 2) {
-          await fetch(response_url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              blocks: buildErrorBlock(
-                "Usage: `/esme-share <chat-id> <email@example.com>`"
-              ),
-              response_type: "ephemeral",
-            }),
-          });
-          return;
-        }
-
-        const chatId = parts[0];
-        const email = parts[1];
-
-        await fetch(response_url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            blocks: buildErrorBlock(
-              "Sharing chats from Slack requires the web app (needs to fetch file contents). Please use the web interface to share."
-            ),
-            response_type: "ephemeral",
-          }),
-        });
         break;
       }
 
@@ -437,7 +376,7 @@ slackRouter.post("/events", (req, res, next) => {
     console.log("Received Slack challenge, responding with:", req.body.challenge);
     return res.json({ challenge: req.body.challenge });
   }
-  
+
   // For other events, proceed with signature verification
   next();
 }, verifySlackRequest, async (req, res) => {
