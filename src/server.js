@@ -36,22 +36,42 @@ const app = express();
 app.set("trust proxy", 1);
 
 // CORS
-app.use(cors({
-  origin: process.env.FRONTEND_URL || "http://localhost:8080",
-  credentials: true,
-}));
-
-// Raw body for Slack signature verification
 app.use(
-  bodyParser.urlencoded({
-    verify: (req, res, buf) => {
-      req.rawBody = buf.toString();
-    },
-    extended: true,
+  cors({
+    origin: process.env.FRONTEND_URL || "http://localhost:8080",
+    credentials: true,
   })
 );
 
-app.use(express.json());
+/**
+ * IMPORTANT:
+ * Slack signature verification needs the EXACT raw request body.
+ * Slack sends:
+ * - slash commands / interactions: application/x-www-form-urlencoded
+ * - events: application/json
+ *
+ * So we must capture rawBody for BOTH.
+ */
+
+// Capture rawBody for URL-encoded payloads (Slack commands / interactions)
+app.use(
+  bodyParser.urlencoded({
+    extended: true,
+    verify: (req, _res, buf) => {
+      req.rawBody = buf.toString();
+    },
+  })
+);
+
+// Capture rawBody for JSON payloads (Slack events)
+app.use(
+  bodyParser.json({
+    verify: (req, _res, buf) => {
+      req.rawBody = buf.toString();
+    },
+  })
+);
+
 app.use(cookieParser());
 
 // Create PostgreSQL session store
@@ -151,14 +171,16 @@ app.get("/admin/clear-slack-tokens", requireUser, async (req, res) => {
 app.post("/admin/create-slack-channels", requireUser, async (req, res) => {
   try {
     if (!req.user.slackAccessToken) {
-      return res.json({ 
+      return res.json({
         error: "Please connect Slack first",
-        needsSlack: true 
+        needsSlack: true,
       });
     }
 
-    const { getOrCreateSlackChannel, syncMessagesToSlack } = await import("./services/slackChannelManager.js");
-    
+    const { getOrCreateSlackChannel, syncMessagesToSlack } = await import(
+      "./services/slackChannelManager.js"
+    );
+
     // Get all user's chats without Slack channels
     const chats = await prisma.chat.findMany({
       where: {
@@ -166,6 +188,7 @@ app.post("/admin/create-slack-channels", requireUser, async (req, res) => {
         slackChannelId: null,
       },
       include: {
+        owner: true,
         files: true,
         messages: {
           orderBy: { createdAt: "asc" },
@@ -179,24 +202,25 @@ app.post("/admin/create-slack-channels", requireUser, async (req, res) => {
     for (const chat of chats) {
       try {
         console.log(`Creating channel for chat: ${chat.name}`);
-        
+
         const channelId = await getOrCreateSlackChannel(chat, req.user.slackAccessToken);
-        
+
         // Reload chat to get slackChannelId
         const updatedChat = await prisma.chat.findUnique({
           where: { id: chat.id },
           include: {
+            owner: true,
             messages: {
               orderBy: { createdAt: "asc" },
             },
           },
         });
-        
+
         // Sync messages
         if (updatedChat.messages.length > 0) {
           await syncMessagesToSlack(updatedChat, req.user.slackAccessToken);
         }
-        
+
         results.push({
           chatId: chat.id,
           chatName: chat.name,
@@ -204,7 +228,7 @@ app.post("/admin/create-slack-channels", requireUser, async (req, res) => {
           messagesSynced: updatedChat.messages.length,
           success: true,
         });
-        
+
         console.log(`✅ Created channel ${channelId} for chat ${chat.name}`);
       } catch (error) {
         console.error(`Error creating channel for chat ${chat.id}:`, error);

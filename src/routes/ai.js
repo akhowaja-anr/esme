@@ -18,10 +18,10 @@ aiRouter.post("/prompt", async (req, res) => {
       return res.status(400).json({ error: "Missing chatId or userPrompt" });
     }
 
-    // Get chat
+    // Get chat (+ owner so Slack channel creation can invite them)
     const chat = await prisma.chat.findFirst({
       where: { id: chatId, ownerId: userId },
-      include: { files: true },
+      include: { files: true, owner: true },
     });
 
     if (!chat) {
@@ -34,28 +34,48 @@ aiRouter.post("/prompt", async (req, res) => {
       });
     }
 
+    const trimmedPrompt = userPrompt.trim();
+
+    // Ensure Slack channel exists if user connected Slack
+    if (req.user.slackAccessToken && !chat.slackChannelId) {
+      try {
+        const { getOrCreateSlackChannel } = await import(
+          "../services/slackChannelManager.js"
+        );
+
+        const channelId = await getOrCreateSlackChannel(chat, req.user.slackAccessToken);
+
+        // Update local chat object so we can post immediately
+        chat.slackChannelId = channelId;
+      } catch (e) {
+        console.error("Error creating Slack channel:", e);
+      }
+    }
+
     // Save user message
     const userMessage = await prisma.message.create({
       data: {
         chatId: chat.id,
         sender: "user",
-        text: userPrompt.trim(),
+        text: trimmedPrompt,
         timestamp: BigInt(Date.now()),
         userId,
       },
     });
 
-    // Post user message to Slack if channel exists
+    // Post user message to Slack
     if (chat.slackChannelId && req.user.slackAccessToken) {
       try {
-        const { postMessageToSlack } = await import("../services/slackChannelManager.js");
-        
+        const { postMessageToSlack } = await import(
+          "../services/slackChannelManager.js"
+        );
+
         const slackTs = await postMessageToSlack(
           chat.slackChannelId,
-          `👤 *You*\n${userPrompt.trim()}`,
+          `👤 *You*\n${trimmedPrompt}`,
           req.user.slackAccessToken
         );
-        
+
         await prisma.message.update({
           where: { id: userMessage.id },
           data: { slackTs, syncedToSlack: true },
@@ -94,22 +114,22 @@ aiRouter.post("/prompt", async (req, res) => {
     const effectiveSystemPrompt =
       systemPrompt && systemPrompt.trim()
         ? systemPrompt.trim()
-        : chat.systemPrompt || "You are a helpful AI assistant.";
+        : chat.systemPrompt || DEFAULT_SYSTEM_PROMPT;
 
     let combinedPrompt = `${effectiveSystemPrompt}\n\n***DOCUMENTS CONTENT***\n\n`;
 
     fileContents.forEach((file, index) => {
-      combinedPrompt += `\n--- START DOCUMENT ${index + 1} (${file.name} - ${file.mimeType}) ---\n`;
+      combinedPrompt += `\n--- START DOCUMENT ${index + 1} (${file.name} - ${
+        file.mimeType
+      }) ---\n`;
       combinedPrompt += file.content || "";
-      if (file.note) {
-        combinedPrompt += `\n[Note: ${file.note}]`;
-      }
+      if (file.note) combinedPrompt += `\n[Note: ${file.note}]`;
       combinedPrompt += `\n--- END DOCUMENT ${index + 1} ---\n`;
     });
 
     combinedPrompt +=
       `\n***USER REQUEST***\n\n` +
-      `${userPrompt.trim()}\n\n` +
+      `${trimmedPrompt}\n\n` +
       `***INSTRUCTIONS***\n\n` +
       `Please provide a comprehensive and accurate response based on the document content above. ` +
       `If the information needed to answer the question is not available in the documents, please state that clearly.\n\n` +
@@ -131,14 +151,16 @@ aiRouter.post("/prompt", async (req, res) => {
     // Post AI response to Slack
     if (chat.slackChannelId && req.user.slackAccessToken) {
       try {
-        const { postMessageToSlack } = await import("../services/slackChannelManager.js");
-        
+        const { postMessageToSlack } = await import(
+          "../services/slackChannelManager.js"
+        );
+
         const slackTs = await postMessageToSlack(
           chat.slackChannelId,
           `🤖 *AI Assistant*\n${aiResponse}`,
           req.user.slackAccessToken
         );
-        
+
         await prisma.message.update({
           where: { id: aiMessage.id },
           data: { slackTs, syncedToSlack: true },

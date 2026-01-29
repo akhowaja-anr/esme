@@ -3,10 +3,11 @@ import { createSlackClient } from "./slackClient.js";
 
 /**
  * Create or get Slack channel for a chat
+ * IMPORTANT: For private channels, the human user must be invited or they won't see it.
  */
 export async function getOrCreateSlackChannel(chat, ownerSlackToken) {
   console.log("🔧 getOrCreateSlackChannel called for chat:", chat.id);
-  
+
   // If channel already exists, return it
   if (chat.slackChannelId) {
     console.log("✅ Channel already exists:", chat.slackChannelId);
@@ -15,7 +16,7 @@ export async function getOrCreateSlackChannel(chat, ownerSlackToken) {
 
   const client = createSlackClient(ownerSlackToken);
   const channelName = sanitizeChannelName(chat.name, chat.id);
-  
+
   console.log("📝 Creating private channel with name:", channelName);
 
   try {
@@ -36,6 +37,34 @@ export async function getOrCreateSlackChannel(chat, ownerSlackToken) {
         slackChannelName: channelName,
       },
     });
+
+    // Invite the chat owner to the channel so it appears in their Slack
+    // chat.owner may not be included depending on caller, so fetch if missing
+    const owner =
+      chat.owner ||
+      (await prisma.user.findUnique({
+        where: { id: chat.ownerId },
+        select: { slackUserId: true },
+      }));
+
+    if (owner?.slackUserId) {
+      try {
+        await client.conversations.invite({
+          channel: channelId,
+          users: owner.slackUserId,
+        });
+        console.log(`✅ Invited owner ${owner.slackUserId} to channel ${channelId}`);
+      } catch (e) {
+        // already_in_channel is fine
+        if (e?.data?.error === "already_in_channel") {
+          console.log("ℹ️ Owner already in channel");
+        } else {
+          console.error("⚠️ Failed to invite owner to channel:", e?.data || e);
+        }
+      }
+    } else {
+      console.log("⚠️ No owner slackUserId found, cannot invite owner");
+    }
 
     // Set channel topic
     await client.conversations.setTopic({
@@ -67,8 +96,7 @@ export async function addUserToChannel(channelId, slackUserId, inviterToken) {
     console.log(`✅ Added user ${slackUserId} to channel ${channelId}`);
     return true;
   } catch (error) {
-    // User might already be in channel
-    if (error.data?.error === "already_in_channel") {
+    if (error?.data?.error === "already_in_channel") {
       console.log(`ℹ️ User ${slackUserId} already in channel`);
       return true;
     }
@@ -118,7 +146,9 @@ export async function syncMessagesToSlack(chat, userToken) {
     return;
   }
 
-  console.log(`📤 Syncing ${messages.length} messages to channel ${chat.slackChannelId}`);
+  console.log(
+    `📤 Syncing ${messages.length} messages to channel ${chat.slackChannelId}`
+  );
 
   const client = createSlackClient(userToken);
 
@@ -131,10 +161,8 @@ export async function syncMessagesToSlack(chat, userToken) {
       const result = await client.chat.postMessage({
         channel: chat.slackChannelId,
         text,
-        username: senderName,
       });
 
-      // Mark as synced
       await prisma.message.update({
         where: { id: msg.id },
         data: {
@@ -163,7 +191,7 @@ async function postChatInitMessage(client, channelId, chat) {
 
   if (files.length > 0) {
     text += `📎 *Attached Documents:*\n`;
-    files.forEach((f) => text += `• ${f.name}\n`);
+    files.forEach((f) => (text += `• ${f.name}\n`));
     text += `\n`;
   }
 
@@ -185,14 +213,13 @@ async function postChatInitMessage(client, channelId, chat) {
         type: "section",
         text: {
           type: "mrkdwn",
-          text: files.length > 0
-            ? `📎 *${files.length} document(s) attached*`
-            : "No documents attached yet",
+          text:
+            files.length > 0
+              ? `📎 *${files.length} document(s) attached*`
+              : "No documents attached yet",
         },
       },
-      {
-        type: "divider",
-      },
+      { type: "divider" },
       {
         type: "section",
         text: {
@@ -208,18 +235,15 @@ async function postChatInitMessage(client, channelId, chat) {
  * Sanitize channel name for Slack
  */
 function sanitizeChannelName(name, chatId) {
-  // Slack channel names: lowercase, no spaces, max 80 chars
-  let sanitized = name
+  let sanitized = (name || "chat")
     .toLowerCase()
     .replace(/[^a-z0-9-_]/g, "-")
     .replace(/-+/g, "-")
     .replace(/^-|-$/g, "");
 
-  // Add unique suffix
   const suffix = chatId.slice(-8);
   sanitized = `esme-${sanitized}-${suffix}`;
 
-  // Truncate if needed
   if (sanitized.length > 80) {
     sanitized = sanitized.substring(0, 72) + "-" + suffix;
   }
