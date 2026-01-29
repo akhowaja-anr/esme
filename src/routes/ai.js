@@ -11,45 +11,61 @@ const DEFAULT_SYSTEM_PROMPT =
 aiRouter.post("/prompt", async (req, res) => {
   try {
     const userId = req.user.id;
-    const accessToken = req.googleAccessToken; // set by requireGoogleAccessToken middleware
+    const accessToken = req.googleAccessToken;
+    const { chatId, userPrompt, systemPrompt } = req.body;
 
-    const { chatId, userPrompt, systemPrompt } = req.body || {};
+    if (!chatId || !userPrompt) {
+      return res.status(400).json({ error: "Missing chatId or userPrompt" });
+    }
 
-    if (!chatId || typeof chatId !== "string") {
-      return res.status(400).json({ error: "chatId is required" });
+    // Get chat
+    const chat = await prisma.chat.findFirst({
+      where: { id: chatId, ownerId: userId },
+      include: { files: true },
+    });
+
+    if (!chat) {
+      return res.status(404).json({ error: "Chat not found or access denied" });
     }
-    if (!userPrompt || typeof userPrompt !== "string" || !userPrompt.trim()) {
-      return res.status(400).json({ error: "userPrompt is required" });
-    }
-    if (!accessToken) {
-      return res.status(401).json({
-        error:
-          "Missing Google access token. Send Authorization: Bearer <google_access_token>",
+
+    if (!chat.files || chat.files.length === 0) {
+      return res.status(400).json({
+        error: "No files attached to this chat. Please attach files first.",
       });
     }
 
-    // Load chat + files from DB
-    const chat = await prisma.chat.findFirst({
-      where: { id: chatId, ownerId: userId },
-      select: {
-        id: true,
-        systemPrompt: true,
-        name: true,
-        filesLocked: true,
-        files: {
-          select: { driveFileId: true, name: true, mimeType: true },
-        },
+    // Save user message
+    const userMessage = await prisma.message.create({
+      data: {
+        chatId: chat.id,
+        sender: "user",
+        text: userPrompt.trim(),
+        timestamp: BigInt(Date.now()),
+        userId,
       },
     });
 
-    if (!chat) return res.status(404).json({ error: "Chat not found" });
+    // Post user message to Slack if channel exists
+    if (chat.slackChannelId && req.user.slackAccessToken) {
+      try {
+        const { postMessageToSlack } = await import("../services/slackChannelManager.js");
+        
+        const slackTs = await postMessageToSlack(
+          chat.slackChannelId,
+          `👤 *You*\n${userPrompt.trim()}`,
+          req.user.slackAccessToken
+        );
+        
+        await prisma.message.update({
+          where: { id: userMessage.id },
+          data: { slackTs, syncedToSlack: true },
+        });
+      } catch (error) {
+        console.error("Error posting user message to Slack:", error);
+      }
+    }
 
-    const finalSystemPrompt =
-      typeof systemPrompt === "string" && systemPrompt.trim()
-        ? systemPrompt.trim()
-        : chat.systemPrompt || DEFAULT_SYSTEM_PROMPT;
-
-    // Fetch file contents (Apps Script parity)
+    // Get file contents
     const fileContents = [];
     for (const f of chat.files) {
       try {
@@ -58,12 +74,7 @@ aiRouter.post("/prompt", async (req, res) => {
           fileId: f.driveFileId,
           mimeType: f.mimeType,
         });
-
-        fileContents.push({
-          name: contentData.name || f.name,
-          mimeType: contentData.mimeType || f.mimeType,
-          content: contentData.content || "",
-        });
+        fileContents.push(contentData);
       } catch (err) {
         const msg =
           err && typeof err === "object" && "message" in err
@@ -73,17 +84,26 @@ aiRouter.post("/prompt", async (req, res) => {
         fileContents.push({
           name: f.name || `File ID: ${f.driveFileId}`,
           mimeType: f.mimeType || "error",
-          content: `Error reading file: ${msg}. Content not included.`,
+          content: `Error reading file: ${msg}`,
+          note: "Error",
         });
       }
     }
 
-    // Build combined prompt exactly like Apps Script
-    let combinedPrompt = `${finalSystemPrompt}\n\n***DOCUMENTS CONTENT***\n\n`;
+    // Build prompt
+    const effectiveSystemPrompt =
+      systemPrompt && systemPrompt.trim()
+        ? systemPrompt.trim()
+        : chat.systemPrompt || "You are a helpful AI assistant.";
+
+    let combinedPrompt = `${effectiveSystemPrompt}\n\n***DOCUMENTS CONTENT***\n\n`;
 
     fileContents.forEach((file, index) => {
       combinedPrompt += `\n--- START DOCUMENT ${index + 1} (${file.name} - ${file.mimeType}) ---\n`;
       combinedPrompt += file.content || "";
+      if (file.note) {
+        combinedPrompt += `\n[Note: ${file.note}]`;
+      }
       combinedPrompt += `\n--- END DOCUMENT ${index + 1} ---\n`;
     });
 
@@ -95,34 +115,7 @@ aiRouter.post("/prompt", async (req, res) => {
       `If the information needed to answer the question is not available in the documents, please state that clearly.\n\n` +
       `***AI RESPONSE***\n\n`;
 
-    // Save user message
-    await prisma.message.create({
-      data: {
-        chatId: chat.id,
-        sender: "user",
-        text: userPrompt.trim(),
-        timestamp: BigInt(Date.now()),
-        userId,
-      },
-    });
-
-    // ✅ Post user message to Slack
-    if (chat.slackChannelId && accessToken) {
-      try {
-        const { postMessageToSlack } = await import("../services/slackChannelManager.js");
-
-        await postMessageToSlack(
-          chat.slackChannelId,
-          `👤 *You*\n${userPrompt.trim()}`,
-          accessToken
-        );
-      } catch (error) {
-        console.error("Error posting user message to Slack:", error);
-      }
-    }
-
-
-    // Call Gemini
+    // Call AI
     const aiResponse = await callGemini(combinedPrompt);
 
     // Save AI message
@@ -135,25 +128,23 @@ aiRouter.post("/prompt", async (req, res) => {
       },
     });
 
-    // ✅ Post to Slack if channel exists
+    // Post AI response to Slack
     if (chat.slackChannelId && req.user.slackAccessToken) {
       try {
         const { postMessageToSlack } = await import("../services/slackChannelManager.js");
-
+        
         const slackTs = await postMessageToSlack(
           chat.slackChannelId,
           `🤖 *AI Assistant*\n${aiResponse}`,
           req.user.slackAccessToken
         );
-
-        // Update message with Slack timestamp
+        
         await prisma.message.update({
           where: { id: aiMessage.id },
           data: { slackTs, syncedToSlack: true },
         });
       } catch (error) {
-        console.error("Error posting to Slack:", error);
-        // Continue without Slack sync
+        console.error("Error posting AI response to Slack:", error);
       }
     }
 
@@ -161,6 +152,6 @@ aiRouter.post("/prompt", async (req, res) => {
   } catch (e) {
     const message =
       e && typeof e === "object" && "message" in e ? e.message : String(e);
-    res.status(500).json({ error: message || "prompt error" });
+    res.status(500).json({ error: message || "ai prompt error" });
   }
 });

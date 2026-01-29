@@ -151,33 +151,28 @@ sharesRouter.post("/", async (req, res) => {
     });
 
     // ✅ If chat has Slack channel, invite the shared user
-    if (chat.slackChannelId && sharedWithUser?.slackUserId) {
-      try {
-        const { addUserToChannel } = await import("../services/slackChannelManager.js");
+    if (chat.slackChannelId && sharedWithUser?.slackUserId && req.user.slackAccessToken) {
+  try {
+    const { addUserToChannel, postMessageToSlack } = await import("../services/slackChannelManager.js");
+    
+    await addUserToChannel(
+      chat.slackChannelId,
+      sharedWithUser.slackUserId,
+      req.user.slackAccessToken
+    );
 
-        await addUserToChannel(
-          chat.slackChannelId,
-          sharedWithUser.slackUserId,
-          req.user.slackAccessToken
-        );
+    await postMessageToSlack(
+      chat.slackChannelId,
+      `✨ *${sharedWithUser.name || sharedWithUser.email}* was added to this chat!`,
+      req.user.slackAccessToken
+    );
 
-        // Mark as synced
-        await prisma.chatShare.update({
-          where: { id: share.id },
-          data: { slackSynced: true },
-        });
+    console.log("✅ Added user to Slack channel");
+  } catch (error) {
+    console.error("Error adding user to Slack channel:", error);
+  }
+}
 
-        // Post notification in channel
-        const { postMessageToSlack } = await import("../services/slackChannelManager.js");
-        await postMessageToSlack(
-          chat.slackChannelId,
-          `✨ *${sharedWithUser.name || sharedWithUser.email}* was added to this chat!`,
-          req.user.slackAccessToken
-        );
-      } catch (error) {
-        console.error("Error adding user to Slack channel:", error);
-      }
-    }
 
     res.status(201).json({ share });
   } catch (e) {

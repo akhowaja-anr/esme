@@ -25,7 +25,7 @@ export function buildChatListBlocks(chats, type = "personal") {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: "💡 Personal chats can only be accessed in the web app.\nTo message from Slack, share a chat first!",
+        text: "💡 Your chats are synced as private Slack channels.\nCheck your Slack sidebar for channels starting with `esme-`",
       },
     },
     {
@@ -38,12 +38,13 @@ export function buildChatListBlocks(chats, type = "personal") {
     const chatId = chat.id;
     const fileCount = chat._count?.files || 0;
     const messageCount = chat._count?.messages || 0;
+    const channelName = chat.slackChannelName || "Not synced yet";
 
     blocks.push({
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `*${chatName}*\n📎 ${fileCount} files · 💬 ${messageCount} messages`,
+        text: `*${chatName}*\n📱 Channel: \`${channelName}\`\n📎 ${fileCount} files · 💬 ${messageCount} messages`,
       },
       accessory: {
         type: "button",
@@ -62,7 +63,7 @@ export function buildChatListBlocks(chats, type = "personal") {
     elements: [
       {
         type: "mrkdwn",
-        text: "🔗 To message from Slack: Share a chat with colleagues using the web app",
+        text: "💬 Message directly in the Slack channels to chat with AI!",
       },
     ],
   });
@@ -95,7 +96,7 @@ export function buildSharedChatListBlocks(shares) {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: "💡 To send a message: `/esme-chat <Share-ID> <your message>`",
+        text: "💡 Shared chats use snapshots - they're read-only in this view.",
       },
     },
     {
@@ -114,10 +115,7 @@ export function buildSharedChatListBlocks(shares) {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: `*${chatName}*\n` +
-              `📋 Share ID: \`${shareId}\`\n` +
-              `👤 Shared by: ${sharedBy}\n` +
-              `📎 ${fileCount} files · 💬 ${messageCount} messages`,
+        text: `*${chatName}*\n👤 Shared by: ${sharedBy}\n📎 ${fileCount} files · 💬 ${messageCount} messages`,
       },
       accessory: {
         type: "button",
@@ -130,70 +128,6 @@ export function buildSharedChatListBlocks(shares) {
       },
     });
   });
-
-  blocks.push({
-    type: "context",
-    elements: [
-      {
-        type: "mrkdwn",
-        text: "📱 Use the Share ID in `/esme-chat` or click *View in Web* to see full chat",
-      },
-    ],
-  });
-
-  return blocks;
-}
-
-export function buildChatMessagesBlocks(chat, messages) {
-  const blocks = [
-    {
-      type: "header",
-      text: {
-        type: "plain_text",
-        text: chat.name || "Chat Conversation",
-      },
-    },
-    {
-      type: "divider",
-    },
-  ];
-
-  if (!messages || messages.length === 0) {
-    blocks.push({
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: "No messages yet. Start a conversation!",
-      },
-    });
-    return blocks;
-  }
-
-  // Show last 5 messages
-  const recentMessages = messages.slice(-5);
-
-  recentMessages.forEach((msg) => {
-    const emoji = msg.sender === "user" ? "👤" : "🤖";
-    blocks.push({
-      type: "section",
-      text: {
-        type: "mrkdwn",
-        text: `${emoji} *${msg.sender === "user" ? "You" : "AI"}*\n${msg.text}`,
-      },
-    });
-  });
-
-  if (messages.length > 5) {
-    blocks.push({
-      type: "context",
-      elements: [
-        {
-          type: "mrkdwn",
-          text: `_Showing last 5 of ${messages.length} messages_`,
-        },
-      ],
-    });
-  }
 
   return blocks;
 }
