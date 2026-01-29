@@ -47,9 +47,6 @@ function verifySlackRequest(req, res, next) {
   return res.status(400).send("Invalid signature");
 }
 
-/**
- * OAuth callback - Connect Slack account
- */
 slackRouter.get("/oauth/callback", async (req, res) => {
   const { code } = req.query;
 
@@ -59,6 +56,8 @@ slackRouter.get("/oauth/callback", async (req, res) => {
 
   try {
     const client = new WebClient();
+    
+    // Get BOTH bot and user tokens
     const result = await client.oauth.v2.access({
       client_id: process.env.SLACK_CLIENT_ID,
       client_secret: process.env.SLACK_CLIENT_SECRET,
@@ -66,35 +65,45 @@ slackRouter.get("/oauth/callback", async (req, res) => {
       redirect_uri: process.env.SLACK_REDIRECT_URI,
     });
 
+    console.log("======================================");
+    console.log("📦 OAuth Result:", JSON.stringify(result, null, 2));
+    console.log("======================================");
+
+    // ✅ USE BOT TOKEN, not user token!
+    const botToken = result.access_token; // This is the bot token with correct scopes
     const slackUserId = result.authed_user.id;
     const slackTeamId = result.team.id;
-    const slackAccessToken = result.authed_user.access_token;
 
-    // Get user info from Slack
-    const userClient = new WebClient(slackAccessToken);
-    const userInfo = await userClient.users.info({ user: slackUserId });
+    console.log("🤖 Bot token scopes:", result.scope);
+    console.log("👤 User token scopes:", result.authed_user?.scope);
+
+    // Get user info using BOT token
+    const botClient = new WebClient(botToken);
+    const userInfo = await botClient.users.info({ user: slackUserId });
     const email = userInfo.user.profile.email;
 
-    // Find or create user
+    // Save user with BOT token
     const user = await prisma.user.upsert({
       where: { email },
       update: {
         slackUserId,
         slackTeamId,
-        slackAccessToken,
+        slackAccessToken: botToken, // ✅ Save BOT token, not user token
       },
       create: {
         email,
         name: userInfo.user.real_name || userInfo.user.name,
         slackUserId,
         slackTeamId,
-        slackAccessToken,
+        slackAccessToken: botToken, // ✅ Save BOT token
       },
     });
 
-    // Send welcome message
+    console.log("✅ Saved user with BOT token");
+
+    // Send welcome DM using bot token
     await sendSlackMessage(
-      userClient,
+      botClient,
       slackUserId,
       "🎉 *Connected to e-SME!*\n\n" +
       "Your e-SME chats will appear as private Slack channels.\n\n" +
@@ -110,14 +119,13 @@ slackRouter.get("/oauth/callback", async (req, res) => {
     );
 
     res.send(
-      '<html><body><h1>✅ Slack Connected!</h1><p>You can close this window and return to Slack.</p></body></html>'
+      '<html><body><h1>✅ Slack Connected!</h1><p>You can close this window and return to the app.</p><script>setTimeout(() => window.close(), 2000);</script></body></html>'
     );
   } catch (error) {
     console.error("Slack OAuth error:", error);
-    res.status(500).send("OAuth failed");
+    res.status(500).send(`OAuth failed: ${error.message}`);
   }
 });
-
 /**
  * Slash Commands handler
  */
