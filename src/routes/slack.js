@@ -13,6 +13,14 @@ import { getDriveFileContent } from "../services/driveContent.js";
 
 export const slackRouter = express.Router();
 
+/**
+ * Get Slack Client ID for OAuth
+ */
+slackRouter.get("/client-id", (req, res) => {
+  res.json({ clientId: process.env.SLACK_CLIENT_ID });
+});
+
+
 // Slack signing secret verification middleware
 function verifySlackRequest(req, res, next) {
   const slackSignature = req.headers["x-slack-signature"];
