@@ -99,43 +99,60 @@ export async function postMessageToSlack(channelId, text, userToken, threadTs = 
 /**
  * Sync message history to Slack
  */
+/**
+ * Sync message history to Slack
+ */
 export async function syncMessagesToSlack(chat, userToken) {
-    const messages = await prisma.message.findMany({
-        where: {
-            chatId: chat.id,
-            syncedToSlack: false,
+  const messages = await prisma.message.findMany({
+    where: {
+      chatId: chat.id,
+      syncedToSlack: false,
+    },
+    orderBy: { createdAt: "asc" },
+  });
+
+  if (!messages.length) {
+    console.log("No messages to sync");
+    return;
+  }
+
+  // ✅ Make sure we have a channel ID
+  if (!chat.slackChannelId) {
+    console.log("❌ No Slack channel ID for chat:", chat.id);
+    return;
+  }
+
+  console.log(`Syncing ${messages.length} messages to channel ${chat.slackChannelId}`);
+
+  const client = createSlackClient(userToken);
+
+  for (const msg of messages) {
+    try {
+      const emoji = msg.sender === "user" ? "👤" : "🤖";
+      const senderName = msg.sender === "user" ? "You" : "AI Assistant";
+      const text = `${emoji} *${senderName}*\n${msg.text}`;
+
+      const result = await client.chat.postMessage({
+        channel: chat.slackChannelId, // ✅ Pass channel ID correctly
+        text,
+        username: senderName,
+      });
+
+      // Mark as synced
+      await prisma.message.update({
+        where: { id: msg.id },
+        data: {
+          syncedToSlack: true,
+          slackTs: result.ts,
         },
-        orderBy: { createdAt: "asc" },
-    });
+      });
 
-    if (!messages.length) return;
-
-    const client = createSlackClient(userToken);
-
-    for (const msg of messages) {
-        try {
-            const emoji = msg.sender === "user" ? "👤" : "🤖";
-            const senderName = msg.sender === "user" ? "You" : "AI Assistant";
-            const text = `${emoji} *${senderName}*\n${msg.text}`;
-
-            const result = await client.chat.postMessage({
-                channel: chat.slackChannelId,
-                text,
-                username: senderName,
-            });
-
-            // Mark as synced
-            await prisma.message.update({
-                where: { id: msg.id },
-                data: {
-                    syncedToSlack: true,
-                    slackTs: result.ts,
-                },
-            });
-        } catch (error) {
-            console.error(`Error syncing message ${msg.id}:`, error);
-        }
+      console.log(`✅ Synced message ${msg.id} to Slack`);
+    } catch (error) {
+      console.error(`Error syncing message ${msg.id}:`, error);
+      console.error("Error details:", error.data);
     }
+  }
 }
 
 /**

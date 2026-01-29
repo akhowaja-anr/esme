@@ -75,7 +75,7 @@ chatsRouter.get("/:id", async (req, res) => {
   const userId = req.user.id;
   const chatId = req.params.id;
 
-  const chat = await prisma.chat.findFirst({
+  let chat = await prisma.chat.findFirst({
     where: { id: chatId, ownerId: userId },
     include: {
       files: {
@@ -108,35 +108,50 @@ chatsRouter.get("/:id", async (req, res) => {
   // ✅ Create Slack channel if user has Slack connected and channel doesn't exist
   if (req.user.slackAccessToken && !chat.slackChannelId) {
     try {
+      console.log("Creating Slack channel for chat:", chat.id);
       const { getOrCreateSlackChannel, syncMessagesToSlack } = await import("../services/slackChannelManager.js");
       
       await getOrCreateSlackChannel(chat, req.user.slackAccessToken);
       
-      // Sync existing messages
-      if (chat.messages.length > 0) {
-        await syncMessagesToSlack(chat, req.user.slackAccessToken);
-      }
-      
-      // Reload chat to get updated slackChannelId
-      const updatedChat = await prisma.chat.findUnique({
+      // ✅ RELOAD CHAT after creating channel (now has slackChannelId)
+      chat = await prisma.chat.findUnique({
         where: { id: chatId },
         include: {
-          files: { orderBy: { createdAt: "asc" } },
-          messages: { orderBy: { createdAt: "asc" } },
+          files: {
+            orderBy: { createdAt: "asc" },
+            select: {
+              id: true,
+              driveFileId: true,
+              name: true,
+              mimeType: true,
+              createdAt: true,
+            },
+          },
+          messages: {
+            orderBy: { createdAt: "asc" },
+            select: {
+              id: true,
+              sender: true,
+              text: true,
+              timestamp: true,
+              createdAt: true,
+              userId: true,
+              slackTs: true,
+            },
+          },
         },
       });
       
-      const safeChat = {
-        ...updatedChat,
-        messages: updatedChat.messages.map((m) => ({
-          ...m,
-          timestamp: m.timestamp != null ? m.timestamp.toString() : null,
-        })),
-      };
-
-      return res.json({ chat: safeChat });
+      console.log("Chat reloaded with Slack channel ID:", chat.slackChannelId);
+      
+      // Sync existing messages (now chat has slackChannelId)
+      if (chat.messages.length > 0) {
+        console.log("Syncing existing messages to Slack...");
+        await syncMessagesToSlack(chat, req.user.slackAccessToken);
+      }
+      
     } catch (error) {
-      console.error("Slack channel creation error:", error);
+      console.error("Slack channel creation/sync error:", error);
       // Continue without Slack channel
     }
   }
