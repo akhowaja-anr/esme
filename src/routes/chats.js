@@ -1,5 +1,9 @@
 import express from "express";
 import { prisma } from "../db/prisma.js";
+import {
+  renameSlackChannelForChat,
+  archiveSlackChannelForChat,
+} from "../services/slackChatSync.js";
 
 export const chatsRouter = express.Router();
 
@@ -61,6 +65,8 @@ chatsRouter.get("/", async (req, res) => {
       scope: true,
       updatedAt: true,
       createdAt: true,
+      slackChannelId: true,
+      slackChannelName: true,
     },
   });
 
@@ -109,27 +115,29 @@ chatsRouter.get("/:id", async (req, res) => {
   if (req.user.slackAccessToken && !chat.slackChannelId) {
     try {
       console.log("🚀 Creating Slack channel for chat:", chat.id);
-      
-      const { getOrCreateSlackChannel, syncMessagesToSlack } = await import("../services/slackChannelManager.js");
-      
+
+      const { getOrCreateSlackChannel, syncMessagesToSlack } = await import(
+        "../services/slackChannelManager.js"
+      );
+
       await getOrCreateSlackChannel(chat, req.user.slackAccessToken);
-      
+
       // Reload chat to get slackChannelId
       chat = await prisma.chat.findUnique({
         where: { id: chatId },
         include: {
           files: { orderBy: { createdAt: "asc" } },
           messages: { orderBy: { createdAt: "asc" } },
+          owner: true,
         },
       });
-      
+
       console.log("✅ Chat reloaded with channel ID:", chat.slackChannelId);
-      
+
       // Sync existing messages
       if (chat.messages.length > 0) {
         await syncMessagesToSlack(chat, req.user.slackAccessToken);
       }
-      
     } catch (error) {
       console.error("❌ Slack error:", error);
       // Continue without Slack
@@ -151,30 +159,37 @@ chatsRouter.get("/:id", async (req, res) => {
 /**
  * PATCH /chats/:id
  * body can include: { name?, systemPrompt?, filesLocked? }
+ *
+ * NEW: If name changes and Slack channel exists, rename Slack channel too.
  */
 chatsRouter.patch("/:id", async (req, res) => {
   const userId = req.user.id;
   const chatId = req.params.id;
 
-  // ownership check
+  // ownership check + get current name/slack info for rename detection
   const existing = await prisma.chat.findFirst({
     where: { id: chatId, ownerId: userId },
-    select: { id: true },
+    select: {
+      id: true,
+      name: true,
+      slackChannelId: true,
+    },
   });
   if (!existing) return res.status(404).json({ error: "Chat not found" });
 
   const data = {};
+  let nameChanged = false;
 
   if (typeof req.body?.name === "string") {
     const trimmed = req.body.name.trim();
     if (!trimmed) return res.status(400).json({ error: "name cannot be empty" });
     data.name = trimmed;
+    nameChanged = trimmed !== existing.name;
   }
 
   if (typeof req.body?.systemPrompt === "string") {
     const trimmed = req.body.systemPrompt.trim();
-    // allow empty => clear
-    data.systemPrompt = trimmed ? trimmed : null;
+    data.systemPrompt = trimmed ? trimmed : null; // allow empty => clear
   }
 
   if (typeof req.body?.filesLocked === "boolean") {
@@ -192,14 +207,27 @@ chatsRouter.patch("/:id", async (req, res) => {
       scope: true,
       createdAt: true,
       updatedAt: true,
+      slackChannelId: true,
+      slackChannelName: true,
     },
   });
+
+  // 🔁 Slack rename sync (best-effort, never block API response)
+  if (nameChanged && existing.slackChannelId) {
+    try {
+      await renameSlackChannelForChat(chatId);
+    } catch (e) {
+      console.error("Slack rename sync failed:", e);
+    }
+  }
 
   res.json({ chat });
 });
 
 /**
  * DELETE /chats/:id
+ *
+ * NEW: Archive Slack channel (Slack doesn't "delete" channels) before deleting DB row.
  */
 chatsRouter.delete("/:id", async (req, res) => {
   const userId = req.user.id;
@@ -207,10 +235,20 @@ chatsRouter.delete("/:id", async (req, res) => {
 
   const existing = await prisma.chat.findFirst({
     where: { id: chatId, ownerId: userId },
-    select: { id: true },
+    select: { id: true, slackChannelId: true },
   });
   if (!existing) return res.status(404).json({ error: "Chat not found" });
 
+  // 🔁 Slack archive sync (best-effort)
+  if (existing.slackChannelId) {
+    try {
+      await archiveSlackChannelForChat(chatId);
+    } catch (e) {
+      console.error("Slack archive sync failed:", e);
+    }
+  }
+
   await prisma.chat.delete({ where: { id: chatId } });
+
   res.json({ ok: true });
 });
