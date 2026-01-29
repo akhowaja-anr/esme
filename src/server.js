@@ -137,6 +137,31 @@ app.use("/ai", requireUser, requireGoogleAccessToken, aiRouter);
 // ✅ Drive routes (token required)
 app.use("/drive", requireUser, requireGoogleAccessToken, driveRouter);
 
+// temporary
+app.get("/admin/clear-slack-tokens", requireUser, async (req, res) => {
+  try {
+    // Clear all Slack tokens
+    const result = await prisma.user.updateMany({
+      where: {
+        slackUserId: { not: null },
+      },
+      data: {
+        slackAccessToken: null,
+        slackUserId: null,
+        slackTeamId: null,
+      },
+    });
+
+    res.json({
+      success: true,
+      message: `Cleared Slack tokens for ${result.count} users`,
+      count: result.count,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 const port = Number(process.env.PORT) || 8080;
 app.listen(port, () => {
   console.log(`Backend running on http://localhost:${port}`);
